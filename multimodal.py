@@ -235,14 +235,10 @@ for rank, doc in enumerate(image_candidates,start=1):
 # TEXT:
 #
 # T1
-# T2
-# T3
-#
-#
+
 # IMAGE:
 #
 # I1
-# I2
 #
 #
 # RRF combines the rankings.
