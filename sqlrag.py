@@ -1,14 +1,9 @@
 
 from sqlalchemy import create_engine, text
-
 from langchain_community.utilities import SQLDatabase
-
 from langchain_ollama import ChatOllama, OllamaEmbeddings
-
 from langchain_chroma import Chroma
-
 from langchain_core.documents import Document
-
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
 engine = create_engine("sqlite:///company.db")
@@ -17,17 +12,13 @@ engine = create_engine("sqlite:///company.db")
 
 db = SQLDatabase(engine)
 
-print("\n============================================================")
 print("EXISTING SQLITE TABLES")
-print("============================================================")
 
 tables = db.get_usable_table_names()
 
 print(tables)
 
-print("\n============================================================")
 print("DATABASE SCHEMA")
-print("============================================================")
 
 schema = db.get_table_info()
 
@@ -49,10 +40,9 @@ vector_store = Chroma(
 
 def build_vector_index():
 
-    print("\n============================================================")
-    print("BUILDING VECTOR INDEX")
-    print("============================================================")
 
+    print("BUILDING VECTOR INDEX")
+    
     
     with engine.connect() as conn:
 
@@ -120,21 +110,11 @@ def build_vector_index():
     print(f"Vector documents indexed: "f"{len(documents)}")
 
 
-# ============================================================
-# 10. SQL RETRIEVAL
-# ============================================================
-#
+
+# SQL RETRIEVAL
+
 # The LLM converts:
-#
-# Natural language
-#       |
-#       v
-#      SQL
-#       |
-#       v
-#    SQLite
-#
-# ============================================================
+# Natural language -> SQL -> SQLite
 
 def sql_retrieval(question):
 
@@ -189,17 +169,13 @@ def sql_retrieval(question):
             raise ValueError(f"Unsafe SQL operation detected: {word}")
 
 
-    # --------------------------------------------------------
-    # Execute SQL against EXISTING SQLite database
-    # --------------------------------------------------------
-
     result = db.run(sql_query)
 
     return result, sql_query
 
 
 # ============================================================
-# 11. VECTOR RETRIEVAL
+# VECTOR RETRIEVAL
 # ============================================================
 #
 # This searches Chroma semantically.
@@ -237,7 +213,7 @@ def vector_retrieval(question,k=5):
 
 
 # ============================================================
-# 12. FUSION
+# FUSION
 # ============================================================
 #
 # Combine SQL retrieval + vector retrieval.
@@ -285,15 +261,13 @@ def reciprocal_rank_fusion(vector_results):
     return fused_results
 
 
-# ============================================================
-# 13. GET COMPLETE SQLITE ROW
-# ============================================================
-#
+
+# GET COMPLETE SQLITE ROW
+
 # After vector retrieval gives us customer IDs, we go back
 # to SQLite and obtain the authoritative structured data.
 #
 # This is an important hybrid-RAG pattern.
-# ============================================================
 
 def get_sqlite_rows(customer_ids):
 
@@ -316,10 +290,8 @@ def get_sqlite_rows(customer_ids):
     return rows
 
 
-# ============================================================
-# 14. CROSS ENCODER RERANKING
-# ============================================================
-#
+# CROSS ENCODER RERANKING
+
 # Vector search:
 #
 #       Fast but approximate
@@ -336,8 +308,6 @@ def get_sqlite_rows(customer_ids):
 # and calculates:
 #
 #       Relevance Score
-#
-# ============================================================
 
 reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L6-v2")
 
@@ -368,34 +338,16 @@ def rerank(question,candidates,top_k=3):
 
     scores = reranker.predict(pairs)
 
-
-    # --------------------------------------------------------
-    # Attach scores
-    # --------------------------------------------------------
-
     for candidate, score in zip(candidates,scores):
-
         candidate["rerank_score"] = float(score)
 
 
-    # --------------------------------------------------------
-    # Sort
-    # --------------------------------------------------------
-
     ranked = sorted(candidates, key=lambda x: x["rerank_score"], reverse=True)
-
-
     return ranked[:top_k]
 
 def generate_final_answer(question,sql_result,ranked_candidates):
 
-    # --------------------------------------------------------
-    # Vector / reranked context
-    # --------------------------------------------------------
-
     context_parts = []
-
-
     for candidate in ranked_candidates:
 
         context_parts.append(
@@ -412,15 +364,7 @@ def generate_final_answer(question,sql_result,ranked_candidates):
         )
 
 
-    vector_context = (
-        "\n-------------------------\n"
-        .join(context_parts)
-    )
-
-
-    # --------------------------------------------------------
-    # Final prompt
-    # --------------------------------------------------------
+    vector_context = ("\n-------------------------\n".join(context_parts))
 
     prompt = f"""
         You are a data assistant.
@@ -460,43 +404,31 @@ def generate_final_answer(question,sql_result,ranked_candidates):
     return response.content
 
 
-# ============================================================
-# 16. COMPLETE HYBRID RAG PIPELINE
-# ============================================================
+
+# COMPLETE HYBRID RAG PIPELINE
 
 def hybrid_rag(question):
 
     print("\nUSER QUESTION:")
     print(question)
 
-    print("\n============================================================")
     print("STEP 1 - SQL RETRIEVAL")
-    print("============================================================")
-
-
+    
     try:
 
         sql_result, generated_sql = sql_retrieval(question)
 
     except Exception as e:
-
         print("\nSQL retrieval failed:",e)
-
         sql_result = ""
-
         generated_sql = ""
 
 
     print("\nSQL RESULT:")
-
     print(sql_result)
 
-
- 
-    print("\n============================================================")
     print("STEP 2 - VECTOR RETRIEVAL")
-    print("============================================================")
-
+    
 
     vector_results = vector_retrieval(question,k=5)
 
@@ -504,43 +436,28 @@ def hybrid_rag(question):
     for rank, item in enumerate(vector_results,start=1):
 
         document = item["document"]
-
-
         print(f"\nVector Rank: {rank}")
-
         print("Customer ID:", document.metadata["customer_id"])
-
         print("Name:",document.metadata["name"])
 
         print("Vector Score:",item["vector_score"])
 
 
-    # ========================================================
+    
     # STEP 3 - FUSION
-    # ========================================================
-
-    print("\n============================================================")
+    
     print("STEP 3 - FUSION")
-    print("============================================================")
-
-
+    
     fused_results = reciprocal_rank_fusion(vector_results)
 
 
     print("Fused candidates:",len(fused_results))
 
-
-    # ========================================================
     # STEP 4 - GET AUTHORITATIVE DATA FROM SQLITE
-    # ========================================================
-
+    
     customer_ids = []
-
-
     for item in fused_results:
-
         customer_ids.append(item["customer_id"])
-
 
     sqlite_rows = get_sqlite_rows(customer_ids)
 
@@ -550,8 +467,6 @@ def hybrid_rag(question):
     # --------------------------------------------------------
 
     candidates = []
-
-
     for row in sqlite_rows:
 
         candidates.append({
@@ -565,40 +480,26 @@ def hybrid_rag(question):
         })
 
 
-    # ========================================================
+    
     # STEP 5 - CROSS ENCODER RERANKING
-    # ========================================================
-
-    print("\n============================================================")
+    
     print("STEP 5 - CROSS ENCODER RERANKING")
-    print("============================================================")
-
-
+    
     ranked_candidates = rerank(question,candidates,top_k=3)
 
 
     for rank, candidate in enumerate(ranked_candidates,start=1):
-
         print(f"\nRerank {rank}")
-
         print("Customer ID:",candidate["customer_id"])
-
         print("Name:",candidate["name"])
-
         print("Complaint:",candidate["complaint"])
-
         print("CrossEncoder Score:",candidate["rerank_score"])
 
 
-    # ========================================================
+
     # STEP 6 - FINAL LLM
-    # ========================================================
 
-    print("\n============================================================")
     print("STEP 6 - FINAL LLM ANSWER")
-    print("============================================================")
-
-
     answer = generate_final_answer(question,sql_result,ranked_candidates)
 
 
@@ -609,10 +510,9 @@ def hybrid_rag(question):
     return answer
 
 
-# ============================================================
-# 17. BUILD VECTOR INDEX
-# ============================================================
-#
+
+# BUILD VECTOR INDEX
+
 # IMPORTANT:
 #
 # Run this when you initially create the vector index.
@@ -620,8 +520,6 @@ def hybrid_rag(question):
 # It READS your existing SQLite data.
 #
 # It DOES NOT INSERT OR MODIFY ANY SQLite data.
-#
-# ============================================================
 
 build_vector_index()
 
