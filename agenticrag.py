@@ -8,22 +8,13 @@ from langchain_ollama import (
 )
 
 from langchain_chroma import Chroma
-
 from langchain_core.documents import Document
-
 from sentence_transformers import CrossEncoder
+from langgraph.graph import StateGraph, START, END
 
-from langgraph.graph import (StateGraph,START,END)
+DATABASE_URL = "sqlite:///company.db"
 
-DATABASE_URL = (
-    "sqlite:///company.db"
-)
-
-engine = create_engine(
-    DATABASE_URL
-)
-
-======================================================
+engine = create_engine(DATABASE_URL)
 
 llm = ChatOllama(model="llama3.2:1b",temperature=0)
 
@@ -39,11 +30,9 @@ vector_store = Chroma(
 )
 
 # CROSS ENCODER
-
 reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L6-v2")
 
 # GET DATABASE SCHEMA
-
 def get_database_schema():
     with engine.connect() as conn:
         tables = conn.execute(
@@ -53,7 +42,6 @@ def get_database_schema():
             """)
         ).fetchall()
 
-
         schema_parts = []
 
 
@@ -61,65 +49,35 @@ def get_database_schema():
 
             table_name = table[0]
             columns = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
-
             schema_parts.append(f"\nTABLE: {table_name}")
 
             for column in columns:
-
                 column_name = column[1]
                 column_type = column[2]
                 schema_parts.append(f"{column_name} {column_type}")
-
 
         return "\n".join(schema_parts)
 
 
 SCHEMA = get_database_schema()
-
 print("DATABASE SCHEMA")
-
 print(SCHEMA)
 
-
-# ============================================================
-# 7. LANGGRAPH STATE
-# ============================================================
-
+# LANGGRAPH STATE
 class RAGState(TypedDict, total=False):
+    question: str # Original user question
+    route: str # Agent's retrieval decision
+    sql_query: str # Generated SQL
 
-    # Original user question
-    question: str
+    sql_result: str # SQL result
+    vector_results: List[Dict[str, Any]] # Vector results
+    fused_results: List[Dict[str, Any]] # Fused results
+    reranked_results: List[Dict[str, Any]] # Reranked results
 
-    # Agent's retrieval decision
-    route: str
-
-    # Generated SQL
-    sql_query: str
-
-    # SQL result
-    sql_result: str
-
-    # Vector results
-    vector_results: List[Dict[str, Any]]
-
-    # Fused results
-    fused_results: List[Dict[str, Any]]
-
-    # Reranked results
-    reranked_results: List[Dict[str, Any]]
-
-    # Evidence evaluation
-    sufficient: bool
-
-    # Number of retrieval attempts
-    attempts: int
-
-    # Final answer
-    answer: str
-
-    # Error information
-    error: str
-
+    sufficient: bool # Evidence evaluation
+    attempts: int # Number of retrieval attempts
+    answer: str # Final answer
+    error: str # Error information
 
 # QUERY ANALYZER / AGENT
 
@@ -133,10 +91,7 @@ class RAGState(TypedDict, total=False):
 
 
 def analyze_query(state: RAGState):
-
     question = state["question"]
-
-
     prompt = f"""
 You are the routing agent in an Agentic RAG system.
 
@@ -190,60 +145,39 @@ BOTH
 """
 
     response = llm.invoke(prompt)
-
     route = response.content.strip().upper()
     if "BOTH" in route:
         route = "BOTH"
-
     elif "VECTOR" in route:
         route = "VECTOR"
-
     else:
-
         route = "SQL"
 
 
     
     print("AGENT ROUTING DECISION")
-    
     print(route)
-
 
     state["route"] = route
     state["attempts"] = state.get("attempts",0)
 
-
     return state
 
-
-# ============================================================
-# 9. ROUTER
-# ============================================================
+# ROUTER
 
 def route_after_analysis(state: RAGState):
-
     route = state["route"]
-
     if route == "SQL":
         return "sql"
-
 
     if route == "VECTOR":
         return "vector"
 
-
     return "both"
 
-
-# ============================================================
-# 10. SQL RETRIEVAL
-# ============================================================
-
+# SQL RETRIEVAL
 def sql_retrieval(state: RAGState):
-
     question = state["question"]
-
-
     prompt = f"""
         You are an expert SQLite SQL developer.
 
@@ -278,10 +212,6 @@ def sql_retrieval(state: RAGState):
     sql_query = sql_query.strip()
 
 
-    # --------------------------------------------------------
-    # Safety
-    # --------------------------------------------------------
-
     forbidden = [
         "INSERT",
         "UPDATE",
@@ -290,21 +220,13 @@ def sql_retrieval(state: RAGState):
         "ALTER",
         "TRUNCATE"
     ]
-
-
     upper_sql = sql_query.upper()
-
-
     for word in forbidden:
         if word in upper_sql:
             state["error"] = (f"Unsafe SQL detected: {word}")
             state["sql_result"] = ""
             return state
 
-
-    # --------------------------------------------------------
-    # Execute
-    # --------------------------------------------------------
 
     try:
         with engine.connect() as conn:
@@ -333,28 +255,19 @@ def sql_retrieval(state: RAGState):
 
     return state
 
-
-
 # VECTOR RETRIEVAL
-
 def vector_retrieval(state: RAGState):
-
     question = state["question"]
-    # --------------------------------------------------------
+    
     # Increase K if this is a retry
-    # --------------------------------------------------------
-
     attempts = state.get("attempts",0)
     k = 5
-
 
     if attempts >= 1:
         k = 10
 
-
     if attempts >= 2:
         k = 20
-
 
     results = vector_store.similarity_search_with_score(question,k=k)
 
@@ -371,28 +284,20 @@ def vector_retrieval(state: RAGState):
 
 
     state["vector_results"] = (vector_results)
-
     print("VECTOR RETRIEVAL")
-    
     print("Retrieved:",len(vector_results))
 
     for item in vector_results:
 
         print("\nRank:",item["rank"])
-
         print("Customer:",item["metadata"].get("customer_id"))
-
         print("Vector score:",item["vector_score"])
-
     return state
 
 
 def fusion(state: RAGState):
     vector_results = state.get("vector_results",[])
     fused = {}
-    # --------------------------------------------------------
-    # Vector candidates
-    # --------------------------------------------------------
 
     for item in vector_results:
         metadata = item["metadata"]
@@ -439,61 +344,37 @@ def fusion(state: RAGState):
     state["fused_results"] = (fused_results)
 
     print("FUSION")
-    
     print("Candidates:",len(fused_results))
-
 
     return state
 
 
 
 # RERANKING
-
 def rerank(state: RAGState):
-
     question = state["question"]
-
-
-    candidates = state.get(
-        "fused_results",
-        []
-    )
-
+    candidates = state.get("fused_results",[])
 
     if not candidates:
-
         state["reranked_results"] = []
-
         return state
 
-
     pairs = []
-
-
     for candidate in candidates:
-
         pairs.append((question,candidate["text"]))
 
-    # --------------------------------------------------------
+    
     # CrossEncoder
-    # --------------------------------------------------------
-
     scores = reranker.predict(pairs)
-
     for candidate, score in zip(candidates,scores):
-
         candidate["rerank_score"] = (float(score))
 
 
     ranked = sorted(candidates,key=lambda x: x["rerank_score"],reverse=True)
-
-
     state["reranked_results"] = (ranked[:5])
-
 
     print("CROSS ENCODER RERANKING")
    
-
     for rank, candidate in enumerate(state["reranked_results"],start=1):
         print("\nRank:",rank)
 
@@ -503,15 +384,12 @@ def rerank(state: RAGState):
     return state
 
 
-# ============================================================
+
 # EVIDENCE CHECKER
-# ============================================================
-#
+
 # This is another agentic decision.
-#
 # The LLM decides whether the retrieved information is enough
 # to answer the question.
-# ============================================================
 
 def evidence_checker(state: RAGState):
     question = state["question"]
@@ -706,7 +584,5 @@ and tell me their order values.
 """
 
 result = app.invoke({"question":question, "attempts":0})
-
-print("#                    FINAL RESULT                           #")
-
+print("FINAL RESULT")
 print(result.get("answer", "No answer generated."))
